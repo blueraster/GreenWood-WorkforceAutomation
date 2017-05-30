@@ -1,0 +1,4 @@
+*.pyc
+*.doc*
+*.jpg
+*cache*
