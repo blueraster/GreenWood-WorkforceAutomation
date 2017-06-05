@@ -216,7 +216,7 @@ def main():
 		# fill assignment parameters
 		try:
 			params = {
-				'assignmentType': assignmentTypeLookup[record['PlantMaintenanceType']] if record['PlantMaintenanceType'] else 3,
+				'assignmentType': assignmentTypeLookup[record['PlantMaintenanceType']] if record['PlantMaintenanceType'] else 6,
 				'location': plantID if plantID else '',
 				'x': geom['x'],
 				'y': geom['y'],
