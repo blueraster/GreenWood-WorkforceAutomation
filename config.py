@@ -5,7 +5,7 @@ ASSIGNMENTS_URL = "https://services2.arcgis.com/gqwmVcOGxkspxBLa/ArcGIS/rest/ser
 
 # queries for getting/posting data from/to feature services
 PLANT_MAINTENANCE_QUERY = {
-	'where': "MaintenanceRecordType = 2 AND CreationDate > date '{}' AND CreationDate <= date '{}'", 
+	'where': "MaintenanceRecordType = 2 AND CreationDate > date '{}'", 
 	'f': 'json', 
 	'returnGeometry': False, 
 	'outFields': 'OBJECTID,FeatureID,CreationDate,PlantMaintenanceType,MaintenancePriority,MaintainanceDueDate,WorkOrderDescription'
@@ -34,7 +34,7 @@ ASSIGNMENTS_POST = {
 	'features': '{}'
 	}
 ASSIGNMENTS_QUERY = {
-	'where': "CreationDate > date '{}' AND CreationDate <= date '{}'",
+	'where': "CreationDate > date '{}'",
 	'outFields': 'priority,location,dueDate',
 	'returnGeometry': False,
 	'f': 'json'
@@ -42,9 +42,19 @@ ASSIGNMENTS_QUERY = {
 
 # email templates
 EMAIL_FROM = 'workforce@green-wood.com'
-EMAIL_TO = 'fwest@blueraster.com'
+EMAIL_TO = 'bjmorgan@apgg.org'
 EMAIL_SUBJECT = 'Collector to Workforce Update'
 EMAIL_TEMPLATE_URGENT = '{} High or Critical priority assignments were created in the past hour.\n'
 EMAIL_TEMPLATE_DIGEST = '{} assignments total were created today.\n'
 EMAIL_TEMPLATE_ERROR = 'Could not upload assignments.\n'
-EMAIL_TEMPLATE_LIST = '\tPlant: {PlantID}\n\t\t{Priority} priority\n\t\tDue {DueDate}'
+EMAIL_TEMPLATE_LIST = ['\n\tPlant ID: {}', '\n\tType: {}', '\n\tDescription: {}', '\n\t{} priority', '\n\tDue {}']
+
+# Coded field pairs
+PRIORITY_PAIRS = [(0, None), (1, 'Low'), (2, 'Medium'), (3, 'High'), (4, 'Critical')]
+ASSIGNMENT_TYPE_PAIRS = [(7, 'Fertilize'), 
+						 (1, 'Fungicide'), 
+						 (2, 'Insecticide'), 
+						 (6, 'Other'), 
+						 (3, 'Prune'),
+						 (4, 'Remove'), 
+						 (5, 'Seed & Soil')]
