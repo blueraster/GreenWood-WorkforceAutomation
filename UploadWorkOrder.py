@@ -9,18 +9,21 @@ try:
 	import json
 	import smtplib
 	from email.mime.text import MIMEText
+	from email.mime.multipart import MIMEMultipart
 	from urllib import request, parse
 	import requests
 	from datetime import datetime, timedelta
 	import pytz
-	from config import PLANT_MAINTENANCE_URL, PLANT_CENTER_URL, ASSIGNMENTS_URL
-	from config import PLANT_MAINTENANCE_QUERY, PLANT_CENTER_QUERY, ASSIGNMENTS_POST, ASSIGNMENTS_QUERY
+	from config import MAINTENANCE_URL, FEATURES_URL, ASSIGNMENTS_URL, TOKEN_URL
+	from config import PORTAL_USERNAME, PORTAL_PASSWORD
+	from config import MAINTENANCE_QUERY, FEATURES_QUERY, ASSIGNMENTS_POST, ASSIGNMENTS_QUERY
+	from config import TYPE_FIELD, DUEDATE_FIELD, IDENTIFIER_FIELD
 	from config import EMAIL_FROM, EMAIL_TO, EMAIL_SUBJECT, EMAIL_TEMPLATE_URGENT, EMAIL_TEMPLATE_DIGEST, EMAIL_TEMPLATE_ERROR, EMAIL_TEMPLATE_LIST
 	from config import PRIORITY_PAIRS, ASSIGNMENT_TYPE_PAIRS
 except Exception as e:
 	print(e)
-	lastline = raw_input(">")
 
+TOKEN = None
 
 URGENT_ASSIGNMENTS_PRESENT = False
 
@@ -40,10 +43,27 @@ def timestamp2ET(ts):
 
 def getTimeRange(delta):
 	now = datetime.utcnow()
-	nearestHour = now - timedelta(minutes=now.minute, seconds=now.second, microseconds=now.microsecond)
+	nearestHour = now - timedelta(minutes=now.minute%15, seconds=now.second, microseconds=now.microsecond)
 	endTime = nearestHour.strftime('%Y-%m-%d %H:%M:%S')
-	startTime = (nearestHour - timedelta(hours=delta)).strftime('%Y-%m-%d %H:%M:%S')
+	startTime = (nearestHour - timedelta(minutes=(int(60*delta)))).strftime('%Y-%m-%d %H:%M:%S')
+	logging.debug('end UTC time: {}, start UTC time: {}'.format(endTime, startTime))
 	return [startTime]
+
+def getPortalToken(tokenUrl, username, password):
+	params = {'username': username,
+			  'password': password,
+			  'client': 'referer',
+			  'referer': tokenUrl,
+			  'expiration': 60,
+			  'f': 'json'}
+	response = requests.post(tokenUrl + '/sharing/rest/generateToken?', data=params)
+	response_json = json.loads(response.text)
+	if not 'token' in response_json.keys():
+		logging.debug(response_json)
+		raise Exception
+	logging.debug(response_json)
+	logging.debug(response_json['token'])
+	return response_json['token']
 
 def uploadAttachments(base_from, base_to):
 	# temporary folder for saving attachments locally
@@ -51,7 +71,7 @@ def uploadAttachments(base_from, base_to):
 	if not os.path.exists(tempdir): os.mkdir(tempdir)
 
 	# get information about attachments
-	url_info = base_from + '?' + parse.urlencode({'f':'json'})
+	url_info = base_from + '?' + parse.urlencode({'f':'json', 'token': TOKEN})
 	attachment_info = json.loads(request.urlopen(url_info).read().decode('utf-8'))['attachmentInfos']
 
 	images = []
@@ -66,7 +86,7 @@ def uploadAttachments(base_from, base_to):
 		logging.info('Transferring attachment {}'.format(img_name))
 
 		# request attachment file
-		url_from = base_from + r'/{}/{}'.format(str(img_id), img_name)
+		url_from = base_from + r'/{}/{}'.format(str(img_id), img_name) + '?' + parse.urlencode({'token': TOKEN})
 		response = request.urlopen(url_from)
 
 		# save file locally
@@ -79,7 +99,7 @@ def uploadAttachments(base_from, base_to):
 		with open(tempfile, 'rb') as f:
 			logging.debug(tempfile)
 			logging.debug(url_to)
-			response = requests.post(url_to, {'f': 'json'}, files={'attachment': (img_name, f, img_type)})
+			response = requests.post(url_to, {'f': 'json', 'token': TOKEN}, files={'attachment': (img_name, f, img_type)})
 			try:
 				response_js = json.loads(response.text)
 				logging.debug(response_js)
@@ -89,20 +109,21 @@ def uploadAttachments(base_from, base_to):
 			print(response)
 
 		# delete temporary attachment file
-		if os.path.exists(tempfile): os.remove(tempfile)
+		# if os.path.exists(tempfile): os.remove(tempfile)
 
 
 	return 
 
 def defineAssignment(assignmentType=0, description='', priority=0, dueDate=0, 
 						location='', workOrderId='', x=0, y=0):
+	logging.debug('Assignment type in defineAssignment(): {}'.format(assignmentType))
 	assignment = {
 		'attributes': {
 			'status': 0,
-			'assignmentType': assignmentType,
-			'assignmentRead': 0,
+			'assignmenttype': assignmentType,
+			'assignmentread': 0,
 			'location': location,
-			'dispatcherId': 0
+			'dispatcherid': 0
 			},
 		'geometry': {'x': x, 'y': y}
 		}
@@ -113,9 +134,9 @@ def defineAssignment(assignmentType=0, description='', priority=0, dueDate=0,
 	if priority:
 		assignment['attributes']['priority'] = priority
 	if dueDate:
-		assignment['attributes']['dueDate'] = dueDate
+		assignment['attributes']['duedate'] = dueDate
 	if workOrderId:
-		assignment['attributes']['workOrderId'] = workOrderId
+		assignment['attributes']['workorderid'] = workOrderId
 
 	return assignment
 
@@ -128,8 +149,8 @@ def getURL(base, queryDict, params):
 
 def validateAssignment(assignment):
 	response = {'success': True, 'errors': []}
-	requiredFields = set(['status', 'assignmentType', 'location', 'assignmentRead', 'dispatcherId'])
-	allFields = requiredFields.union(set(['description', 'priority', 'workOrderId', 'dueDate', 'workerId', 'assignedDate']))
+	requiredFields = set(['status', 'assignmenttype', 'location', 'assignmentread', 'dispatcherid'])
+	allFields = requiredFields.union(set(['description', 'priority', 'workorderid', 'duedate', 'workerid', 'assigneddate']))
 	geomFields = set(['x', 'y'])
 
 	# check attribute fields
@@ -149,7 +170,7 @@ def validateAssignment(assignment):
 	return response
 
 def addAssignments(assignments):
-	url = getURL(ASSIGNMENTS_URL + '/addFeatures?', ASSIGNMENTS_POST, {'features': [assignments]})
+	url = getURL(ASSIGNMENTS_URL + '/addFeatures?', ASSIGNMENTS_POST, {'features': [assignments], 'token': [TOKEN]})
 	try:
 		resource = request.urlopen(url.split('?')[0], url.split('?')[1].encode('utf-8'))
 		response = json.loads(resource.read().decode('utf-8'))
@@ -164,23 +185,26 @@ def getEmailTemplateList(template_list, feats):
 	email_template_list = []
 	for f in feats:
 		email_template_list.append(template_list[0].format(f['location']))
-		email_template_list[-1] += template_list[1].format(assignmentTypeLookup[f['assignmentType']])
+		if 'assignmenttype' in f.keys(): email_template_list[-1] += template_list[1].format(assignmentTypeLookup[f['assignmenttype']])
 		if 'description' in f.keys(): email_template_list[-1] += template_list[2].format(f['description'])
 		if 'priority' in f.keys(): email_template_list[-1] += template_list[3].format(priorityLookup[f['priority']])
-		if 'dueDate' in f.keys(): email_template_list[-1] += template_list[4].format(timestamp2ET(f['dueDate']))
+		if 'duedate' in f.keys(): email_template_list[-1] += template_list[4].format(timestamp2ET(f['duedate']))
 	return email_template_list
 
 def sendEmail(text):
 	# create message
-	msg = MIMEText(text)
+	# msg = MIMEText(text)
+	msg = MIMEMultipart()
 	msg['Subject'] = EMAIL_SUBJECT
 	msg['From'] = EMAIL_FROM
-	msg['To'] = EMAIL_TO
+	msg['To'] = ', '.join(EMAIL_TO)
+	msg.attach(MIMEText(text, ('plain')))
 
 	# send email via SMTP server
 	s = smtplib.SMTP('localhost')
 	try:
-		s.sendmail(EMAIL_FROM, [EMAIL_TO], msg.as_string())
+		# s.sendmail(EMAIL_FROM, EMAIL_TO, msg.as_string())
+		s.send_message(msg)
 	except SMTPException:
 		logging.error('Unable to send mail')
 	finally:
@@ -188,9 +212,16 @@ def sendEmail(text):
 
 
 def main():
+	global URGENT_ASSIGNMENTS_PRESENT
+
+	# generate TOKEN
+	global TOKEN
+	TOKEN = getPortalToken(TOKEN_URL, PORTAL_USERNAME, PORTAL_PASSWORD)
+	logging.debug(TOKEN)
+
 	# record set containing maintenance records from past full hour
 	logging.info('Getting data from feature service...')
-	rsURL = getURL(PLANT_MAINTENANCE_URL + '/query?', PLANT_MAINTENANCE_QUERY, {'where': getTimeRange(1)})
+	rsURL = getURL(MAINTENANCE_URL + '/query?', MAINTENANCE_QUERY, {'where': getTimeRange(0.25), 'token': [TOKEN]})
 	rs = arcpy.RecordSet()
 	logging.debug('Maintenance record feature service url: {}'.format(rsURL))
 	rs.load(rsURL)
@@ -205,24 +236,43 @@ def main():
 	for i, record in enumerate(records):
 		logging.info('{}/{} Processing record {}'.format(i+1, len(records), record['FeatureID']))
 
-		# get the plant feature related to this work order
-		fsURL = getURL(PLANT_CENTER_URL + '/query?', PLANT_CENTER_QUERY, {'where': [record['FeatureID']]})
+		# get the feature related to this work order
+		fsURL = getURL(FEATURES_URL + '/query?', FEATURES_QUERY, {'where': [record['FeatureID']], 'token': [TOKEN]})
 		fs = arcpy.FeatureSet()
 		fs.load(fsURL)
 		logging.debug('Plant feature service url: {}'.format(fsURL))
-		geom = json.loads(fs.JSON)['features'][0]['geometry']
-		plantID = json.loads(fs.JSON)['features'][0]['attributes']['PlantCenterID']
+		fs_json = json.loads(fs.JSON)
+
+		# geometry of feature (find centroid if not a point)
+		geom = fs_json['features'][0]['geometry']
+		if fs_json['geometryType'] == 'esriGeometryPoint':
+			x = geom['x']
+			y = geom['y']
+		else:
+			if fs_json['geometryType'] == 'esriGeometryPolygon':
+				X = [coords[0] for ring in geom['rings'] for coords in ring]
+				Y = [coords[1] for ring in geom['rings'] for coords in ring]
+			elif fs_json['geometryType'] == 'esriGeometryPolyline':
+				X = [coords[0] for path in geom['paths'] for coords in path]
+				Y = [coords[1] for path in geom['paths'] for coords in path]
+			x = sum(X)/len(X)
+			y = sum(Y)/len(Y)
+
+		# ID of feature
+		ID = json.loads(fs.JSON)['features'][0]['attributes'][IDENTIFIER_FIELD]
 
 		# fill assignment parameters
+		logging.debug('Assignment type from collector: {}'.format(record[TYPE_FIELD]))
+		logging.debug('Intended assignment type from description: {}'.format(record['WorkOrderDescription']))
 		try:
 			params = {
-				'assignmentType': assignmentTypeLookup[record['PlantMaintenanceType']] if record['PlantMaintenanceType'] else 6,
-				'location': plantID if plantID else '',
-				'x': geom['x'],
-				'y': geom['y'],
+				'assignmentType': assignmentTypeLookup[record[TYPE_FIELD]] if record[TYPE_FIELD] else 5,
+				'location': ID if ID else '',
+				'x': x,
+				'y': y,
 				'description': record['WorkOrderDescription'] if record['WorkOrderDescription'] else '',
 				'priority': priorityLookup[record['MaintenancePriority']],
-				'dueDate': record['MaintainanceDueDate'] if record['MaintainanceDueDate'] else 0
+				'dueDate': record[DUEDATE_FIELD] if record[DUEDATE_FIELD] else 0
 			}
 
 			# define assignment
@@ -231,11 +281,11 @@ def main():
 			if validation['success']:
 				assignments.append(assignment)
 			else:
-				logging.error('Could not define assignment. Plant ID: {}, maintenance record objectID: {}'.format(plantID, record['OBJECTID']))
+				logging.error('Could not define assignment. ID: {}, maintenance record objectID: {}'.format(ID, record['OBJECTID']))
 				for error in validation['errors']:
 					logging.warning(error)
 		except Exception as e:
-			logging.error('Could not define assignment. Plant ID: {}, maintenance record objectID: {}'.format(plantID, record['OBJECTID']))
+			logging.error('Could not define assignment. ID: {}, maintenance record objectID: {}'.format(ID, record['OBJECTID']))
 			logging.error(e)
 
 
@@ -267,7 +317,7 @@ def main():
 					logging.warning('Maintenance record {} could not be uploaded: {}'.format(record['OBJECTID'], result['error']['description']))
 				else:
 					logging.info('Looking for attachments in maintenance record {} to transfer to assignment {}'.format(record['OBJECTID'], result['objectId']))
-					url_from = PLANT_MAINTENANCE_URL + '/' + str(record['OBJECTID']) + '/attachments'
+					url_from = MAINTENANCE_URL + '/' + str(record['OBJECTID']) + '/attachments'
 					url_to = ASSIGNMENTS_URL + '/' + str(result['objectId'])
 					uploadAttachments(url_from, url_to)
 
@@ -287,25 +337,28 @@ def main():
 				# send email
 				email_template_list = getEmailTemplateList(EMAIL_TEMPLATE_LIST, urgent_assignments)
 				email_text = EMAIL_TEMPLATE_URGENT.format(len(urgent_assignments)) + '\n'.join(email_template_list)
+				logging.info(email_text)
 				sendEmail(email_text)
 	else:
 		logging.info('No assignments to upload')
 
 	# if it's the end of the day, send daily digest
-	if datetime.now().hour == 17:
+	if datetime.now().hour == 17 and datetime.now().minute < 15:
 		logging.info('Sending daily digest')
 
 		# get information about assignments uploaded in last 24 hours
-		fsURL = getURL(ASSIGNMENTS_URL + '/query?', ASSIGNMENTS_QUERY, {'where': getTimeRange(24)})
-		logging.info('Daily digest url: {}'.format(fsURL))
-		fs = arcpy.FeatureSet()
-		fs.load(fsURL)
-		all_records = [{key:record['attributes'][key] for key in record['attributes'].keys() if not record['attributes'][key] is None} for record in json.loads(fs.JSON)['features']]
+		rsURL = getURL(ASSIGNMENTS_URL + '/query?', ASSIGNMENTS_QUERY, {'where': getTimeRange(24), 'token': [TOKEN]})
+		logging.info('Daily digest url: {}'.format(rsURL))
+		rs = arcpy.RecordSet()
+		rs.load(rsURL)
+		all_records = [{key:record['attributes'][key] for key in record['attributes'].keys() if not record['attributes'][key] is None} for record in json.loads(rs.JSON)['features']]
 		logging.info('Found {} records'.format(len(all_records)))
+		logging.info(all_records[-1])
 
 		# send email
 		email_template_list = getEmailTemplateList(EMAIL_TEMPLATE_LIST, all_records)
 		email_text = EMAIL_TEMPLATE_DIGEST.format(len(all_records)) + '\n'.join(email_template_list)
+		logging.info(email_text)
 		sendEmail(email_text)
 
 
